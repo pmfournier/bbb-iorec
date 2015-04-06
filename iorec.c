@@ -12,10 +12,41 @@
 #include <values.h>
 #include <time.h>
 #include <stdbool.h>
+#include <signal.h>
 
 #define ERROR(msg, args...) fprintf(stderr, "error: " msg "\n", ##args)
+#define SIGSAFE_MSG(msg) write(STDERR_FILENO, msg, sizeof(msg))
 
 #define PRU_NUM 0 /* which of the two PRUs are we using? */
+
+sig_atomic_t interrupt_requested = 0;
+
+void
+signal_handler(int sig)
+{
+	SIGSAFE_MSG("Got signal.\n");
+	interrupt_requested = 1;
+}
+
+int setup_signal_handler(void)
+{
+	struct sigaction sa;
+	memset(&sa, 0, sizeof(sa));
+
+	sa.sa_handler = signal_handler;
+
+	if (sigemptyset(&sa.sa_mask) == -1) {
+		ERROR("sigemptyset failed");
+		return -1;
+	}
+
+	if (sigaction(SIGINT, &sa, NULL) == -1) {
+		perror("sigaction");
+		return -1;
+	}
+
+	return 0;
+}
 
 static inline uint64_t
 clock_get_rel_time(void)
@@ -286,7 +317,12 @@ int run(const char *out_file)
 	uint32_t last_write_counter = 0;
 	uint32_t data_size = extmem_size - 4;
 	uint32_t polls = 0;
+	uint32_t max_buffer_use = 0;
 	for (;;) {
+		if (interrupt_requested) {
+			break;
+		}
+
 		polls++;
 
 		uint32_t write_counter;
@@ -320,6 +356,10 @@ int run(const char *out_file)
 			}
 		}
 
+		if (write_counter - last_write_counter > max_buffer_use) {
+			max_buffer_use = write_counter - last_write_counter;
+		}
+
 		last_write_counter = write_counter;
 		asm volatile("" ::: "memory");
 		write_counter = *write_counter_raw;
@@ -342,6 +382,7 @@ int run(const char *out_file)
 	printf("Summary: %" PRIu32 " bytes read in %f sec\n", read_counter, ((double)(t2-t1))/1000000000);
 	printf("         That's %f bytes/second\n", ((double)read_counter)/(((double)(t2-t1))/1000000000));
 	printf("         That's %" PRIu32 " bytes/poll\n", read_counter/polls);
+	printf("         The max amount of buffer required was %" PRIu32 " bytes\n", max_buffer_use);
 
 	/* clear the event, disable the PRU and let the library clean up */
 	if (pru_cleanup() < 0) {
@@ -365,6 +406,8 @@ int main(int argc, char **argv)
 	}
 
 	const char *out_file = argv[1];
+
+	setup_signal_handler();
 
 	if (run(out_file) == -1) {
 		exit(1);
