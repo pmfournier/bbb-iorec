@@ -27,7 +27,7 @@ struct state {
 
 	/* frame decode */
 	int frame_length;
-	char frame_samples[100];
+	char frame_samples[200]; /* FIXME HACK HACK this can overflow*/
 	size_t n_frame_samples;
 	size_t frame_required_samples;
 	off_t beginning_of_frame;
@@ -38,7 +38,7 @@ int annotation_fd = 0;
 bool
 open_annotation(void)
 {
-	annotation_fd = open("/tmp/annotation.txt", O_CREAT | O_WRONLY, 0600);
+	annotation_fd = open("/tmp/annotation.txt", O_CREAT | O_TRUNC | O_WRONLY, 0600);
 	if (annotation_fd == -1) {
 		perror("open");
 		return false;
@@ -68,11 +68,21 @@ is_within_tol(int v, int ref, int tol)
 }
 
 void
+enter_sync(struct state *s)
+{
+	s->n_offsets = 0;
+	s->phase = PHASE_SYNC;
+}
+
+void
 enter_decode_frames(struct state *s, uint32_t frame_length, off_t off)
 {
 	s->phase = PHASE_DECODE;
 	s->frame_length = frame_length;
-	s->n_frame_samples = 0;
+	// FIXME HACK we want decode_frames() to see this first bit which
+	// was already consumed so we add it here
+	s->n_frame_samples = 1;
+	s->frame_samples[0] = 0; // also part of this hack
 	s->frame_required_samples = frame_length + frame_length / 8;
 	s->beginning_of_frame = off;
 }
@@ -80,6 +90,7 @@ enter_decode_frames(struct state *s, uint32_t frame_length, off_t off)
 int
 decode_frames(struct state *s, int b, size_t off)
 {
+	/* FIXME: no boundary checks */
 	int i,j;
 
 	if (b != 0 && b!= 1) {
@@ -92,18 +103,18 @@ decode_frames(struct state *s, int b, size_t off)
 	}
 
 	/* Ok we have a full frame, decode bits */
-	char bits = 0;
+	unsigned char bits = 0;
 
 	for (i = 0; i < 10; i++) {
 		size_t offset = s->frame_length * i / 10;
-		annotate(s->beginning_of_frame + offset, 'b');
 		int bit = 1;
-		for (j = 0; j < 2; j++) {
+		for (j = 0; j < 3; j++) {
 			/* look at 3 samples; if any is low, consider the bit low */
-			if (!s->frame_samples[offset]) {
+			if (!s->frame_samples[offset + j]) {
 				bit = 0;
 			}
 		}
+		annotate(s->beginning_of_frame + offset, (bit)?'B':'b');
 
 		if (i == 0) {
 			/* Start bit */
@@ -116,27 +127,31 @@ decode_frames(struct state *s, int b, size_t off)
 				/* Failure; need to reset */
 			}
 		} else {
-			bits <<= 1;
-			bits |= bit;
+			bits >>= 1;
+			bits |= (bit << 7);
 		}
 	}
 
 	/* We're done; use this byte */
-	printf("Got byte %c (%d)\n", bits, bits);
+	fprintf(stderr, "Got byte %c (%hhu) [%hhx]\n", bits, bits, bits);
 
 	/* Now reset the state machine for the next frame */
 	
 	/* From the offset of the 9th (0-based) bit, search for a low sample */
-	for (i = s->frame_length * 9 / 10; i < s->n_frame_samples; i++) {
+	for (i = s->frame_length * 9 / 10 + 1; i < s->n_frame_samples; i++) {
+		annotate(s->beginning_of_frame + i, '>');
 		if (s->frame_samples[i] == 0) {
+			annotate(s->beginning_of_frame + i, 'v');
 			/* Found the beginning of the next frame. Reuse the samples */
 			memmove(s->frame_samples, &s->frame_samples[i], sizeof(s->frame_samples[0]) * s->n_frame_samples - i);
+			s->beginning_of_frame = s->beginning_of_frame + i;
 			s->n_frame_samples = s->n_frame_samples - i;
 			return 0;
 		}
 	}
 
 	ERROR("couldn't find next frame");
+	enter_sync(s);
 	return 0;
 }
 
@@ -188,7 +203,7 @@ decode_sync(struct state *s, int b, size_t off)
 
 		uint32_t frame_length;
 		if (sync_is_enough(s, &frame_length)) {
-			annotate(off, '!');
+			annotate(off-1, '!');
 			enter_decode_frames(s, frame_length, off);
 		}
 	}
