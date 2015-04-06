@@ -13,12 +13,16 @@
 #include <time.h>
 #include <stdbool.h>
 #include <signal.h>
+#include <getopt.h>
 
 #define ERROR(msg, args...) fprintf(stderr, "error: " msg "\n", ##args)
 #define SIGSAFE_MSG(msg) write(STDERR_FILENO, msg, sizeof(msg))
 
 #define PRU_NUM 0 /* which of the two PRUs are we using? */
 
+bool flag_test_mode = 0;
+int flag_capture_choke = 100;
+const char *flag_out_file = NULL;
 sig_atomic_t interrupt_requested = 0;
 
 void
@@ -229,6 +233,7 @@ int send_extmem_addr_to_pru(void *addr, size_t sz)
 	 */
 	pru_priv_mem[0] = addr;
 	((uint32_t *)pru_priv_mem)[1] = sz;
+	((uint32_t *)pru_priv_mem)[2] = flag_capture_choke;
 
 	return 0;
 }
@@ -238,7 +243,23 @@ void usage(const char *progname)
 	fprintf(stderr, "Usage: %s OUTPUT_FILE\n", progname);
 }
 
-int run(const char *out_file)
+bool
+test_valid(void *mem, size_t len, size_t start_val)
+{
+	size_t i;
+	for (i = 0; i < len; i += 4) {
+		uint32_t *cur = (uint32_t *)(((uint8_t *) mem) + i);
+		if (*cur != start_val + i) {
+			ERROR("failed test - at offset %zu got %zu", start_val+i, *cur);
+			/* Don't exit yet, this could be due to an overrun */
+			return false;
+		}
+	}
+
+	return true;
+}
+
+int run(void)
 {
 	bool overrun = false;
 
@@ -290,16 +311,26 @@ int run(const char *out_file)
 	}
 
 	/* Open outfile */
-	int dumpfd = open(out_file, O_WRONLY | O_CREAT | O_TRUNC, 0700);
-	if (dumpfd == -1) {
-		perror("open");
-		return -1;
+	int dumpfd = -1;
+	if (flag_out_file) {
+		dumpfd = open(flag_out_file, O_WRONLY | O_CREAT | O_TRUNC, 0700);
+		if (dumpfd == -1) {
+			perror("open");
+			return -1;
+		}
 	}
 
 	/* initialize the library, PRU and interrupt; launch our PRU program */
-	if(pru_setup("./iorec.bin")) {
-		pru_cleanup();
-		return -1;
+	if (flag_test_mode) {
+		if(pru_setup("./iorec-test.bin")) {
+			pru_cleanup();
+			return -1;
+		}
+	} else {
+		if(pru_setup("./iorec.bin")) {
+			pru_cleanup();
+			return -1;
+		}
 	}
 
 	uint64_t t1,t2;
@@ -343,16 +374,43 @@ int run(const char *out_file)
 			read_end2 = read_end1;
 		}
 
+		bool test_succeeded = true;
+
 		if (read_end1 - read_begin1) {
-			if (write(dumpfd, ((uint8_t *)ddrmem) + read_begin1, read_end1 - read_begin1) == -1) {
-				perror("write");
-				return -1;
+			if (dumpfd != -1) {
+				/* FIXME: look for partial write()s */
+				if (write(dumpfd, ((uint8_t *)ddrmem) + read_begin1, read_end1 - read_begin1) == -1) {
+					perror("write");
+					return -1;
+				}
+			}
+
+			if (flag_test_mode) {
+				if (!test_valid(
+					((uint8_t *)ddrmem) + read_begin1,
+					read_end1 - read_begin1,
+					read_counter))
+				{
+					test_succeeded = false;
+				}
 			}
 		}
 		if (read_end2 - read_begin2) {
-			if (write(dumpfd, ((uint8_t *)ddrmem) + read_begin2, read_end2 - read_begin2) == -1) {
-				perror("write");
-				return -1;
+			if (dumpfd != -1) {
+				if (write(dumpfd, ((uint8_t *)ddrmem) + read_begin2, read_end2 - read_begin2) == -1) {
+					perror("write");
+					return -1;
+				}
+			}
+
+			if (flag_test_mode) {
+				if (!test_valid(
+					((uint8_t *)ddrmem) + read_begin2,
+					read_end2 - read_begin2,
+					read_counter + read_end1 - read_begin1))
+				{
+					test_succeeded = false;
+				}
 			}
 		}
 
@@ -369,12 +427,13 @@ int run(const char *out_file)
 			overrun = true;
 			break;
 		}
+
+		if (!test_succeeded) {
+			exit(1);
+		}
 		
 		read_counter = last_write_counter;
 
-		if (write_counter > 100000000) {
-			break;
-		}
 	}
 
 	t2 = clock_get_rel_time();
@@ -397,19 +456,57 @@ int run(const char *out_file)
 	}
 }
 
+bool
+parse_opt(int argc, char **argv)
+{
+	struct option opts[] = {
+		{ "test-mode", 0, NULL, 1 },
+		{ "capture-choke", 1, NULL, 2 },
+		{ "help", 0, NULL, 'h' },
+		{ NULL, 0, NULL, 0 },
+	};
+	
+	for (;;) {
+		int opt;
+		opt = getopt_long(argc, argv, "h", opts, NULL);
+		if (opt == -1) {
+			/* Finished */
+			break;
+		}
+		
+		switch (opt) {
+		case 1: /* test-mode */
+			flag_test_mode = true;
+			break;
+		case 2: /* test-mode */
+			flag_capture_choke = atoi(optarg);
+			break;
+		case 'h':
+			usage(argv[0]);
+			exit(0);
+		default:
+			return false;
+		};
+	}
+
+	if (optind < argc) {
+		flag_out_file = argv[optind];
+	}
+
+	return true;
+}
+
 int main(int argc, char **argv)
 {
-	if (argc < 2) {
-		ERROR("missing output file");
+	if (!parse_opt(argc, argv)) {
+		ERROR("failed parsing arguments");
 		usage(argv[0]);
 		exit(1);
 	}
 
-	const char *out_file = argv[1];
-
 	setup_signal_handler();
 
-	if (run(out_file) == -1) {
+	if (run() == -1) {
 		exit(1);
 	}
 

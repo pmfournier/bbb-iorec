@@ -102,33 +102,38 @@ START:
 
     MOV r0, 0           // r0 = write counter; not moduloed
     LBCO r1, C28, 0, 4  // r1 = base address for the ddr memory, which we're reading from the private memory
-    LBCO r2, C28, 4, 4  // r2 = size of designated region, must be a power of 2, passed by C code, read from the private memory
+    LBCO r2, C28, 4, 4  // r2 = size of designated region, must be a power of 2,
+                        //      passed by C code, read from the private memory
     SUB r2, r2, 4       // remove 4 bytes for the output of the write counter
                         // r3 = temporary var for computations in the loop
-                        // r4 = temporary var for computations in the loop
+    LBCO r4, C28, 8, 4  // r4 = delay amount, passed by C code
     MOV r5, 0           // r5 = the relative counter; says the offset in the ddr region we're writing to next
 
     // Loop: 6 instructions, 30 ns per loop, 289 loops per bit, in a 115200 baud transmission
 loop1:
-    SBBO r31, r1, r5, 4  // write to the designated memory; we write the actual value of the unmoduloed counter
-
-
-    // Prepare delay loop
-    MOV r3, 0
-    MOV r4, 100
-delay:
-    ADD r3, r3, 1
-    QBNE delay, r3, r4
+#ifdef TEST_PATTERN
+    SBBO r0, r1, r5, 4  // write to the designated memory; we write the actual value of the unmoduloed counter
+#else
+    SBBO r31, r1, r5, 4  // write the contents of the direct io register
+#endif
 
 
     ADD r0, r0, 4       // increase the value of the unmoduloed offset counter
-    ADD r5, r5, 4
+    ADD r5, r5, 4	// increase moduloed counter
 
+    // Reset moduloed counter if necessary
     QBNE skip_reset, r5, r2
     MOV r5, 0
 skip_reset:
     SBBO r0, r1, r2, 4  // the cumulative write count at offset 8 of private memory
 
+    // Prepare delay loop
+    MOV r3, 0
+delay:
+    ADD r3, r3, 1
+    QBNE delay, r3, r4
+
+    // Jump back to the beginning
     JMP loop1
 
     // Send notification to Host for program completion
