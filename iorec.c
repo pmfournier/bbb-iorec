@@ -21,7 +21,7 @@
 #define PRU_NUM 0 /* which of the two PRUs are we using? */
 
 bool flag_test_mode = 0;
-int flag_capture_choke = 100;
+int flag_capture_choke = 23;
 const char *flag_out_file = NULL;
 sig_atomic_t interrupt_requested = 0;
 
