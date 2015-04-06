@@ -446,7 +446,7 @@ int run(void)
 	t2 = clock_get_rel_time();
 
 	printf("Summary: %" PRIu32 " bytes read in %f sec\n", read_counter, ((double)(t2-t1))/1000000000);
-	printf("         That's %f bytes/second\n", ((double)read_counter)/(((double)(t2-t1))/1000000000));
+	printf("         That's %.2f MB/second\n", ((double)read_counter)/(((double)(t2-t1))/1000));
 	printf("         That's %" PRIu32 " bytes/poll\n", read_counter/polls);
 	printf("         The max amount of buffer required was %" PRIu32 " bytes\n", max_buffer_use);
 
