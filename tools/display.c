@@ -112,6 +112,65 @@ buffered_input_create(int fd)
 	return bi;
 }
 
+#define BIT_INPUT_BUFFER_SIZE 1024
+
+struct bit_input {
+	uint32_t buf[1024];
+	size_t next_idx;
+	size_t next_bit;
+	uint32_t cur_word;
+	int fd;
+};
+
+struct bit_input *bit_input_create(int fd)
+{
+	struct bit_input *bi = malloc(sizeof(*bi));
+	if (bi == NULL) {
+		ERROR("out of memory");
+		return NULL;
+	}
+
+	memset(bi, 0, sizeof(*bi));
+
+	bi->fd = fd;
+	/* Trick the get function into reading from file at next request */
+	bi->next_bit = 32;
+	bi->next_idx = BIT_INPUT_BUFFER_SIZE;
+
+	return bi;
+}
+
+static inline int
+bit_input_get(struct bit_input *bi, int *b)
+{
+	int result;
+
+	if (bi->next_bit == 32) {
+		if (bi->next_idx == BIT_INPUT_BUFFER_SIZE) {
+			result = read(bi->fd, bi->buf, BIT_INPUT_BUFFER_SIZE * sizeof(bi->buf[0]));
+			if (result == -1) {
+				perror("read");
+				return -1;
+			} else if (result == 0) {
+				return 0;
+			}
+
+			bi->next_idx = 0;
+		}
+
+		bi->cur_word = bi->buf[bi->next_idx];
+		bi->next_idx++;
+
+		bi->next_bit = 0;
+	}
+
+	*b = bi->cur_word >> 31;
+	bi->next_bit++;
+	bi->cur_word <<= 1;
+
+	return 1;
+}
+
 void output_compress(int fd_data_in, int fd_data_out, int fd_ann_in, int fd_ann_out)
 {
 	int result;
@@ -122,12 +181,11 @@ void output_compress(int fd_data_in, int fd_data_out, int fd_ann_in, int fd_ann_
 		ERROR("failed to create ann_in");
 		abort();
 	}
-	struct buffered_input *data_in = buffered_input_create(fd_data_in);
-	if (data_in == NULL) {
+	struct bit_input *bi = bit_input_create(fd_data_in);
+	if (bi == NULL) {
 		ERROR("failed to create data_in");
 		abort();
 	}
-
 
 	size_t data_counter_read = 0;
 	size_t data_counter_write = 0;
@@ -163,17 +221,14 @@ void output_compress(int fd_data_in, int fd_data_out, int fd_ann_in, int fd_ann_
 
 		/* Ok we have the next annotation, now read data until we get to its point in the data */
 		for (;;) {
-			uint32_t dr;
-
-			result = buffered_input_get_one_u32(data_in, &dr);
+			int d;
+			result = bit_input_get(bi, &d);
 			if (result == -1) {
-				ERROR("error reading data");
+				ERROR("error getting next bit");
 				abort();
 			} else if (result == 0) {
-				/* FIXME check clean ending */
-				return;
+				d = -1;
 			}
-			char d = ((dr & (1 << 15)) > 0);
 
 			if (d != previous_data_val) {
 				if (same_data_count > 10 && !verbose_mode) {
@@ -209,6 +264,10 @@ void output_compress(int fd_data_in, int fd_data_out, int fd_ann_in, int fd_ann_
 			same_data_count++;
 			data_counter_read++;
 			previous_data_val = d;
+
+			if (d == -1) {
+				return;
+			}
 
 			/* Now that we've made a transition if needed, check if we have reached the next
 			 * annotation point. WARNING: we are now past the incrementation stage so:
@@ -266,24 +325,22 @@ void output_raw(int fd_data_in, int fd_data_out, int fd_ann_in, int fd_ann_out)
 	int i;
 	int result;
 
-	struct buffered_input *data_in = buffered_input_create(fd_data_in);
-	if (data_in == NULL) {
+	struct bit_input *bi = bit_input_create(fd_data_in);
+	if (bi == NULL) {
 		ERROR("failed to create data_in");
 		abort();
 	}
 
 	for (;;) {
+		int d;
 		for (i = 0; i < 1024; i++) {
-			uint32_t dr;
-			result = buffered_input_get_one_u32(data_in, &dr);
+			result = bit_input_get(bi, &d);
 			if (result == -1) {
-				ERROR("error reading data");
+				ERROR("error getting next bit");
 				abort();
 			} else if (result == 0) {
-				break;
+				return;
 			}
-
-			char d = ((dr & (1 << 15)) > 0);
 
 			buf[i] = d ? '-' : '_';
 		}

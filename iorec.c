@@ -25,6 +25,63 @@ int flag_capture_choke = 100;
 const char *flag_out_file = NULL;
 sig_atomic_t interrupt_requested = 0;
 
+struct bit_output {
+	uint32_t buf[4096];
+	size_t next_idx;
+	size_t next_bit;
+	uint32_t cur_word;
+	int fd;
+};
+
+struct bit_output *
+bit_output_create(const char *filename)
+{
+	struct bit_output *bo = malloc(sizeof(*bo));
+	if (bo == NULL) {
+		ERROR("out of memory");
+		return NULL;
+	}
+
+	memset(bo, 0, sizeof(*bo));
+
+	bo->fd = open(filename, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+	if (bo->fd == -1) {
+		free(bo);
+		return NULL;
+	}
+
+	return bo;
+}
+
+static inline int
+bit_output_add(struct bit_output *bo, int b)
+{
+	int result;
+
+	bo->cur_word <<= 1;
+	bo->cur_word |= b;
+	bo->next_bit++;
+
+	if (bo->next_bit == 32) {
+		bo->buf[bo->next_idx] = bo->cur_word;
+		bo->next_idx++;
+		if (bo->next_idx == 4096) {
+			result = write(bo->fd, bo->buf, 4096 * sizeof(bo->buf[0]));
+			if (result == -1 || result == 0) {
+				perror("write");
+				return -1;
+			}
+
+			bo->next_idx = 0;
+		}
+
+		bo->cur_word = 0;
+		bo->next_bit = 0;
+	}
+
+	return 0;
+}
+
 void
 signal_handler(int sig)
 {
@@ -316,10 +373,10 @@ int run(void)
 	}
 
 	/* Open outfile */
-	int dumpfd = -1;
+	struct bit_output *bitout = NULL;
 	if (flag_out_file) {
-		dumpfd = open(flag_out_file, O_WRONLY | O_CREAT | O_TRUNC, 0700);
-		if (dumpfd == -1) {
+		bitout = bit_output_create(flag_out_file);
+		if (bitout == NULL) {
 			perror("open");
 			return -1;
 		}
@@ -380,13 +437,18 @@ int run(void)
 		}
 
 		bool test_succeeded = true;
+		int i;
 
 		if (read_end1 - read_begin1) {
-			if (dumpfd != -1) {
+			if (bitout != NULL) {
 				/* FIXME: look for partial write()s */
-				if (write(dumpfd, ((uint8_t *)ddrmem) + read_begin1, read_end1 - read_begin1) == -1) {
-					perror("write");
-					return -1;
+				for (i = read_begin1; i < read_end1; i+=4) {
+					uint32_t v1 = *(uint32_t *) (((uint8_t *)ddrmem) + i);
+					uint32_t v2 = (v1 >> 15) & 1;
+					if (bit_output_add(bitout, v2) == -1) {
+						perror("write");
+						return -1;
+					}
 				}
 			}
 
@@ -401,10 +463,14 @@ int run(void)
 			}
 		}
 		if (read_end2 - read_begin2) {
-			if (dumpfd != -1) {
-				if (write(dumpfd, ((uint8_t *)ddrmem) + read_begin2, read_end2 - read_begin2) == -1) {
-					perror("write");
-					return -1;
+			if (bitout != NULL) {
+				for (i = read_begin2; i < read_end2; i+=4) {
+					uint32_t v1 = *(uint32_t *) (((uint8_t *)ddrmem) + i);
+					uint32_t v2 = (v1 >> 15) & 1;
+					if (bit_output_add(bitout, v2) == -1) {
+						perror("write");
+						return -1;
+					}
 				}
 			}
 
@@ -446,7 +512,7 @@ int run(void)
 	t2 = clock_get_rel_time();
 
 	printf("Summary: %" PRIu32 " bytes read in %f sec\n", read_counter, ((double)(t2-t1))/1000000000);
-	printf("         That's %.2f MB/second\n", ((double)read_counter)/(((double)(t2-t1))/1000));
+	printf("         That's %.2f MB/second transferred from the PRU\n", ((double)read_counter)/(((double)(t2-t1))/1000));
 	printf("         That's %" PRIu32 " bytes/poll\n", read_counter/polls);
 	printf("         The max amount of buffer required was %" PRIu32 " bytes\n", max_buffer_use);
 
