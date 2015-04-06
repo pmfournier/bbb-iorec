@@ -10,8 +10,11 @@
 
 #define ERROR(msg, args...) fprintf(stderr, "error: " msg "\n", ##args)
 
-#define SYNC_FRAME_LENGTH 116
-#define SYNC_FRAME_LENGTH_TOL 10
+#define SYNC_FRAME_LENGTH 81
+#define SYNC_FRAME_LENGTH_TOL 5
+
+int sync_frame_length = 81;
+int sync_frame_length_tol = 5;
 
 enum phase {
 	PHASE_SYNC=0,
@@ -23,8 +26,7 @@ struct state {
 
 	/* sync phase */
 	int last; /* were we high or low */
-	size_t offsets[30];
-	size_t n_offsets;
+	int consecutive_highs;
 
 	/* frame decode */
 	int frame_length;
@@ -74,8 +76,8 @@ is_within_tol(int v, int ref, int tol)
 void
 enter_sync(struct state *s)
 {
-	s->n_offsets = 0;
 	s->phase = PHASE_SYNC;
+	s->consecutive_highs = 0;
 }
 
 void
@@ -123,12 +125,16 @@ decode_frames(struct state *s, int b, size_t off)
 		if (i == 0) {
 			/* Start bit */
 			if (bit != 0) {
-				/* Failure; need to reset */
+				ERROR("didn't find start bit, resetting sync");
+				enter_sync(s);
+				return 0;
 			}
 		} else if (i == 9) {
 			/* Stop bit */
 			if (bit != 1) {
-				/* Failure; need to reset */
+				ERROR("didn't find stop bit, resetting sync");
+				enter_sync(s);
+				return 0;
 			}
 		} else {
 			bits >>= 1;
@@ -137,7 +143,10 @@ decode_frames(struct state *s, int b, size_t off)
 	}
 
 	/* We're done; use this byte */
-	fprintf(stderr, "Got byte %c (%hhu) [%hhx]\n", bits, bits, bits);
+	if (write(STDOUT_FILENO, &bits, 1) == -1) {
+		perror("write");
+		abort();
+	}
 
 	/* Now reset the state machine for the next frame */
 
@@ -159,57 +168,20 @@ decode_frames(struct state *s, int b, size_t off)
 	return 0;
 }
 
-bool
-sync_is_enough(struct state *s, uint32_t *frame_length)
-{
-	int i;
-
-	if (s->n_offsets < 2) {
-		return false;
-	}
-
-	if (!is_within_tol(
-		s->offsets[s->n_offsets-1] - s->offsets[s->n_offsets-2],
-		SYNC_FRAME_LENGTH,
-		SYNC_FRAME_LENGTH_TOL))
-	{
-		/* Basically clear everything and move the last offset to the
-		 * first slot because it could be the first of a successful string of offsets
-		 */
-		s->offsets[0] = s->offsets[s->n_offsets-1];
-		s->n_offsets = 1;
-	}
-
-	/* If we got here then all the offsets are good */
-	if (s->n_offsets < 5) {
-		return false;
-	}
-
-	/* Compute the average of the length */
-	int average = 0;
-	for (i = 0; i < s->n_offsets - 1; i++) {
-		average += s->offsets[i+1] - s->offsets[i];
-	}
-
-	average /= s->n_offsets - 1;
-	*frame_length = average;
-
-	return true;
-}
-
 int
 decode_sync(struct state *s, int b, size_t off)
 {
 	if (s->last && !b) {
 		/* Transition from high to low */
 
-		s->offsets[s->n_offsets++] = off;
-
-		uint32_t frame_length;
-		if (sync_is_enough(s, &frame_length)) {
+		if (s->consecutive_highs >= sync_frame_length * 2) {
 			annotate(off-1, '!');
-			enter_decode_frames(s, frame_length, off);
+			enter_decode_frames(s, sync_frame_length, off);
 		}
+
+		s->consecutive_highs = 0;
+	} else if (b) {
+		s->consecutive_highs++;
 	}
 
 	s->last = b;
@@ -243,6 +215,8 @@ parse_opt(int argc, char **argv)
 	struct option opts[] = {
 		{ "annotation-out", 1, NULL, 1 },
 		{ "help", 0, NULL, 'h' },
+		{ "frame-length", 0, NULL, 'f' },
+		{ "frame-length-tol", 0, NULL, 't' },
 		{ NULL, 0, NULL, 0 },
 	};
 
@@ -257,6 +231,12 @@ parse_opt(int argc, char **argv)
 		switch (opt) {
 		case 1:
 			flag_annotation_out_file = optarg;
+			break;
+		case 'f':
+			sync_frame_length = atoi(optarg);
+			break;
+		case 't':
+			sync_frame_length_tol = atoi(optarg);
 			break;
 		case 'h':
 			usage(argv[0]);
@@ -299,7 +279,7 @@ main(int argc, char **argv)
 		}
 
 		if ((result >> 2) << 2 != result) {
-			fprintf(stderr, "expected not divisible by 4\n");
+			ERROR("expected not divisible by 4");
 			exit(1);
 		}
 
