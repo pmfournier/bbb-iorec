@@ -1,4 +1,12 @@
-         
+Beaglebone iorec
+================
+Logic analyzer suite for Beaglebone Black
+
+Post: http://hacks.pmf.io/2015/04/03/the-beaglebone-black-as-a-logic-analyzer/
+
+### Connection diagram for infrared module
+
+
          |                     |
       ___|                 Vcc2|
      /   |                     |
