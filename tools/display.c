@@ -264,29 +264,34 @@ void output_raw(int fd_data_in, int fd_data_out, int fd_ann_in, int fd_ann_out)
 {
 	char buf[1024];
 	int i;
+	int result;
+
+	struct buffered_input *data_in = buffered_input_create(fd_data_in);
+	if (data_in == NULL) {
+		ERROR("failed to create data_in");
+		abort();
+	}
 
 	for (;;) {
-		int result = read(fd_data_in, buf, 1024);
-		if (result == -1) {
-			perror("read");
-			abort();
-		}
-		if (result == 0) {
-			break;
-		}
-
 		for (i = 0; i < 1024; i++) {
-			if (buf[i] == 0) {
-				buf[i] = '_';
-			} else {
-				buf[i] = '-';
+			uint32_t dr;
+			result = buffered_input_get_one_u32(data_in, &dr);
+			if (result == -1) {
+				ERROR("error reading data");
+				abort();
+			} else if (result == 0) {
+				break;
 			}
-		}
 
-		if (write(fd_data_out, buf, result) == -1) {
-			perror("write");
-			abort();
+			char d = ((dr & (1 << 15)) > 0);
+
+			buf[i] = d ? '-' : '_';
 		}
+		if (write(STDOUT_FILENO, buf, i) == -1) {
+			perror("write");
+			return;
+		}
+		
 	}
 
 }
