@@ -222,18 +222,18 @@ static void *get_designated_ddr(void *extram)
 	return mem;
 }
 
-int send_extmem_addr_to_pru(void *addr, size_t sz)
+int send_extmem_addr_to_pru(void *pru0_priv_mem, void *addr, size_t sz)
 {
-	void **pru_priv_mem = get_pru_mem();
+	void **pru_priv_mem = (void **) pru0_priv_mem;
 
 	/* We are sending data to the PRU in two 32 bit slots at its address
 	 * 0x0 (the beginning of its address space) The first slot (0x0) is the address
 	 * of the buffer space, the second is the size of the buffer space (0x4).  The
 	 * size of the buffer space is expressed as a power of 2.
 	 */
-	pru_priv_mem[0] = addr;
-	((uint32_t *)pru_priv_mem)[1] = sz;
-	((uint32_t *)pru_priv_mem)[2] = flag_capture_choke;
+	pru_priv_mem[2] = addr;
+	((uint32_t *)pru_priv_mem)[3] = sz;
+	((uint32_t *)pru_priv_mem)[4] = flag_capture_choke;
 
 	return 0;
 }
@@ -300,7 +300,9 @@ int run(void)
 		return -1;
 	}
 
-	if (send_extmem_addr_to_pru(extmem_addr, extmem_size) == -1) {
+	void *pru0_priv_mem = get_pru_mem();
+
+	if (send_extmem_addr_to_pru(pru0_priv_mem, extmem_addr, extmem_size) == -1) {
 		return -1;
 	}
 
@@ -340,8 +342,9 @@ int run(void)
 	/* Address of the write counter which will be updated by the PRU
 	 * Its value is in bytes.
 	 */
-	volatile uint32_t *write_counter_raw = (volatile uint32_t *)(((uint8_t *)ddrmem) + extmem_size - 4);
-	*write_counter_raw = 0;
+	volatile uint32_t *before_write_counter_raw = &((volatile uint32_t *)pru0_priv_mem)[0];
+	volatile uint32_t *after_write_counter_raw = &((volatile uint32_t *)pru0_priv_mem)[1];
+	*after_write_counter_raw = 0;
 
 	/* Do the acquisition */
 	uint32_t read_counter = 0;
@@ -357,7 +360,7 @@ int run(void)
 		polls++;
 
 		uint32_t write_counter;
-		write_counter = *write_counter_raw;
+		write_counter = *after_write_counter_raw;
 
 
 		/* Offsets, in bytes */
@@ -418,20 +421,22 @@ int run(void)
 			max_buffer_use = write_counter - last_write_counter;
 		}
 
-		last_write_counter = write_counter;
 		asm volatile("" ::: "memory");
-		write_counter = *write_counter_raw;
+		uint32_t before_write_counter = *before_write_counter_raw;
 
-		if (write_counter - last_write_counter > extmem_size) {
+		if (before_write_counter > last_write_counter + extmem_size) {
 			ERROR("buffer overrun, diff is %" PRIu32, write_counter - last_write_counter);
 			overrun = true;
 			break;
 		}
 
 		if (!test_succeeded) {
+			ERROR("well the before write counter is %" PRIu32 ", the last_write_counter is %" PRIu32 " and extmem_size is %" PRIu32, write_counter, last_write_counter, extmem_size);
 			exit(1);
 		}
 		
+		last_write_counter = write_counter;
+
 		read_counter = last_write_counter;
 
 	}
