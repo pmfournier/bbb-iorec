@@ -240,7 +240,10 @@ int send_extmem_addr_to_pru(void *pru0_priv_mem, void *addr, size_t sz)
 
 void usage(const char *progname)
 {
-	fprintf(stderr, "Usage: %s OUTPUT_FILE\n", progname);
+	fprintf(stderr, "Usage: %s [ --test-mode ] [ --capture-choke=CHOKE ] [ OUTPUT_FILE ]\n", progname);
+	fprintf(stderr, "       %s -h | --help\n", progname);
+	fprintf(stderr, "\n");
+	fprintf(stderr, "Sample data from the GPIO and it to OUTPUT_FILE\n");
 }
 
 bool
