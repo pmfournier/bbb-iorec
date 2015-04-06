@@ -187,18 +187,6 @@ static void *get_designated_ddr(void *extram)
 	return mem;
 }
 
-//int size2power(uint32_t s, uint32_t *p)
-//{
-//	int i;
-//	for (i = 0; i < 32; i++) {
-//		if (s == (1 << i)) {
-//			return i;
-//		}
-//	}
-//
-//	return -1;
-//}
-
 int send_extmem_addr_to_pru(void *addr, size_t sz)
 {
 	void **pru_priv_mem = get_pru_mem();
@@ -272,7 +260,6 @@ int run(const char *out_file)
 
 	/* Open outfile */
 	int dumpfd = open(out_file, O_WRONLY | O_CREAT | O_TRUNC, 0700);
-	//int dumpfd = open("/dev/null", O_WRONLY, 0700);
 	if (dumpfd == -1) {
 		perror("open");
 		return -1;
@@ -305,7 +292,6 @@ int run(const char *out_file)
 		uint32_t write_counter;
 		write_counter = *write_counter_raw;
 
-		//printf("Write counter: %" PRIu32 "  Prev write counter: %" PRIu32 "\n", write_counter, last_write_counter);
 
 		/* Offsets, in bytes */
 		off_t read_begin1 = last_write_counter % data_size;
@@ -313,7 +299,6 @@ int run(const char *out_file)
 		off_t read_begin2;
 		off_t read_end2;
 		if (read_begin1 > read_end1) {
-			//printf("Got a reversal\n");
 			read_begin2 = 0;
 			read_end2 = read_end1;
 			read_end1 = data_size;
@@ -321,33 +306,6 @@ int run(const char *out_file)
 			read_begin2 = read_end1;
 			read_end2 = read_end1;
 		}
-
-		//printf("read_begin1: %jd  read_end1: %jd  read_begin2: %jd  read_end2: %jd\n", (intmax_t) read_begin1, (intmax_t) read_end1, (intmax_t) read_begin2, (intmax_t) read_end2);
-
-		/* Go ahead and check if something is fishy */
-		//uint32_t i;
-		//for (i = read_begin1; i < read_end1; i+=4) {
-		//	bool waiting = false;
-		//	for (;;) {
-		//		volatile uint32_t *seenp = (volatile uint32_t *)(((uint8_t *)ddrmem) + i);
-		//		uint32_t seen = *seenp;
-		//		uint32_t expected = (last_write_counter / data_size * data_size) + i;
-
-		//		if (seen != expected) {
-		//			if (!waiting) {
-		//				waiting = true;
-		//				printf("fault; offset %" PRIu32 " got %" PRIu32 " but expected %" PRIu32 ", i is %lu out of %lu\n", i, seen, expected, i-read_begin1, read_end1-read_begin1);
-		//			}
-		//		} else {
-		//			if (waiting == true) {
-		//				printf("fixed! got %" PRIu32 "\n", seen);
-		//			} else {
-		//				//printf("Great. Got %" PRIu32 "\n", seen);
-		//			}
-		//			break;
-		//		}
-		//	}
-		//}
 
 		if (read_end1 - read_begin1) {
 			if (write(dumpfd, ((uint8_t *)ddrmem) + read_begin1, read_end1 - read_begin1) == -1) {
@@ -372,7 +330,6 @@ int run(const char *out_file)
 			break;
 		}
 		
-		//printf("diff: %" PRIu32 " write_counter: %" PRIu32 " read_counter: %" PRIu32 "\n", write_counter - read_counter, write_counter, read_counter);
 		read_counter = last_write_counter;
 
 		if (write_counter > 100000000) {
