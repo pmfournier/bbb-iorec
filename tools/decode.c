@@ -6,6 +6,7 @@
 #include <stdint.h>
 #include <unistd.h>
 #include <stdlib.h>
+#include <getopt.h>
 
 #define ERROR(msg, args...) fprintf(stderr, "error: " msg "\n", ##args)
 
@@ -36,9 +37,12 @@ struct state {
 int annotation_fd = 0;
 
 bool
-open_annotation(void)
+open_annotation(const char *annotation_out_file)
 {
-	annotation_fd = open("/tmp/annotation.txt", O_CREAT | O_TRUNC | O_WRONLY, 0600);
+	if (annotation_out_file == NULL) {
+		annotation_out_file = "/dev/null";
+	}
+	annotation_fd = open(annotation_out_file, O_CREAT | O_TRUNC | O_WRONLY, 0600);
 	if (annotation_fd == -1) {
 		perror("open");
 		return false;
@@ -136,7 +140,7 @@ decode_frames(struct state *s, int b, size_t off)
 	fprintf(stderr, "Got byte %c (%hhu) [%hhx]\n", bits, bits, bits);
 
 	/* Now reset the state machine for the next frame */
-	
+
 	/* From the offset of the 9th (0-based) bit, search for a low sample */
 	for (i = s->frame_length * 9 / 10 + 1; i < s->n_frame_samples; i++) {
 		annotate(s->beginning_of_frame + i, '>');
@@ -223,14 +227,61 @@ int decode(struct state *s, int b, size_t off)
 	}
 }
 
+void
+usage(char *progname)
+{
+	fprintf(stderr, "Usage:\n");
+	fprintf(stderr, "\t%s -h\n", progname);
+	fprintf(stderr, "\t%s [ --annotation-out ANNOTATION_FILE ] <FILE_IN\n", progname);
+}
+
+char *flag_annotation_out_file = NULL;
+
+bool
+parse_opt(int argc, char **argv)
+{
+	struct option opts[] = {
+		{ "annotation-out", 1, NULL, 1 },
+		{ "help", 0, NULL, 'h' },
+		{ NULL, 0, NULL, 0 },
+	};
+
+	for (;;) {
+		int opt;
+		opt = getopt_long(argc, argv, "h", opts, NULL);
+		if (opt == -1) {
+			/* Finished */
+			break;
+		}
+
+		switch (opt) {
+		case 1:
+			flag_annotation_out_file = optarg;
+			break;
+		case 'h':
+			usage(argv[0]);
+			exit(0);
+		default:
+			return false;
+		};
+	}
+
+	return true;
+}
+
 int
-main()
+main(int argc, char **argv)
 {
 	struct state s;
 	memset(&s, 0, sizeof(s));
 	size_t read_offset = 0;
 
-	if (!open_annotation()) {
+	if (!parse_opt(argc, argv)) {
+		ERROR("failed to parse arguments");
+		exit(1);
+	}
+
+	if (!open_annotation(flag_annotation_out_file)) {
 		ERROR("failed to open annotation output");
 		return false;
 	}
