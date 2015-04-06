@@ -1,4 +1,4 @@
-CFLAGS+=-Wall -Werror -g3
+CFLAGS+=-Wall -Werror -g3 -O3
 LDLIBS+= -lpthread -lprussdrv -lrt
 
 all: iorec.bin iorec-test.bin iorec
