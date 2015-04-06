@@ -1,0 +1,417 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <prussdrv.h>
+#include <pruss_intc_mapping.h>
+#include <string.h>
+#include <stdint.h>
+#include <inttypes.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <sys/mman.h>
+#include <values.h>
+#include <time.h>
+#include <stdbool.h>
+
+#define ERROR(msg, args...) fprintf(stderr, "error: " msg "\n", ##args)
+
+#define PRU_NUM 0 /* which of the two PRUs are we using? */
+
+static inline uint64_t
+clock_get_rel_time(void)
+{
+	struct timespec ts;
+	if (clock_gettime(CLOCK_MONOTONIC, &ts) == -1) {
+		ERROR("clock_gettime() returned error?!");
+		return 0;
+	}
+
+	uint64_t retval;
+	retval = ts.tv_sec;
+	retval *= 1000000000;
+	retval += ts.tv_nsec;
+
+	return retval;
+}
+
+int hex2void(const char *s, void **out)
+{
+	char *endptr;
+	unsigned long val;
+
+	errno = 0;
+	val = strtoul(s, &endptr, 16);
+
+	if ((errno == ERANGE && (val == LONG_MAX || val == LONG_MIN))
+	        || (errno != 0 && val == 0))
+	{
+		perror("strtol");
+		return -1;
+	}
+	
+	if (endptr == s) {
+		fprintf(stderr, "No digits were found\n");
+		return -1;
+	}
+
+	*out = (void *) val;
+
+	return 0;
+}
+
+#define MEM_ADDR_FILE "/sys/class/uio/uio0/maps/map1/addr"
+#define MEM_SIZE_FILE "/sys/class/uio/uio0/maps/map1/size"
+int get_extmem_address_from_module(void **addr_out, uint32_t *size_out)
+{
+	FILE *fp = fopen(MEM_ADDR_FILE, "r");
+	if (fp == NULL) {
+		return -1;
+	}
+
+	char buf[20];
+
+	if (fscanf(fp, "%s", buf) != 1) {
+		return -1;
+	}
+
+	if (strlen(buf) < 3) {
+		return -1;
+	}
+
+	if (buf[0] != '0' ||
+		buf[1] != 'x')
+	{
+		return -1;
+	}
+
+	if (hex2void(&buf[2], addr_out) == -1) {
+		return -1;
+	}
+
+	fclose(fp);
+
+	/* Now get the length of the memory area */
+
+	fp = fopen(MEM_SIZE_FILE, "r");
+	if (fp == NULL) {
+		return -1;
+	}
+
+	if (fscanf(fp, "%s", buf) != 1) {
+		return -1;
+	}
+
+	if (strlen(buf) < 3) {
+		return -1;
+	}
+
+	if (buf[0] != '0' ||
+		buf[1] != 'x')
+	{
+		return -1;
+	}
+
+	void *size_out_void;
+	if (hex2void(&buf[2], &size_out_void) == -1) {
+		return -1;
+	}
+	*size_out = (uint32_t) size_out_void;
+
+	return 0;
+}
+
+static int pru_setup(const char * const path)
+{
+	int rtn;
+
+	if((rtn = prussdrv_exec_program(PRU_NUM, path)) < 0) {
+		fprintf(stderr, "prussdrv_exec_program() failed\n");
+		return rtn;
+	}
+
+	return rtn;
+}
+
+static int pru_cleanup(void)
+{
+   int rtn = 0;
+
+   /* clear the event (if asserted) */
+   if(prussdrv_pru_clear_event(PRU_EVTOUT_0, PRU0_ARM_INTERRUPT)) {
+      fprintf(stderr, "prussdrv_pru_clear_event() failed\n");
+      rtn = -1;
+   }
+
+   /* halt and disable the PRU (if running) */
+   if((rtn = prussdrv_pru_disable(PRU_NUM)) != 0) {
+      fprintf(stderr, "prussdrv_pru_disable() failed\n");
+      rtn = -1;
+   }
+
+   /* release the PRU clocks and disable prussdrv module */
+   if((rtn = prussdrv_exit()) != 0) {
+      fprintf(stderr, "prussdrv_exit() failed\n");
+      rtn = -1;
+   }
+
+   return rtn;
+}
+
+static void *get_pru_mem(void)
+{
+	void *mem;
+
+	prussdrv_map_prumem (PRUSS0_PRU0_DATARAM, &mem);
+
+	return mem;
+}
+
+static void *get_designated_ddr(void *extram)
+{
+	void *mem;
+	int fd;
+	
+	fd = open("/dev/mem", O_RDWR | O_DSYNC);
+	if (fd < 0) {
+		printf("Failed to open /dev/mem (%s)\n", strerror(errno));
+		exit(1);
+	}
+
+	mem = mmap(0, 0x0FFFFFFF, PROT_READ | PROT_WRITE, MAP_SHARED, fd, (off_t)extram);
+	if (mem == NULL) {
+		printf("Failed to map the device (%s)\n", strerror(errno));
+		close(fd);
+		exit(1);
+	}
+
+	return mem;
+}
+
+//int size2power(uint32_t s, uint32_t *p)
+//{
+//	int i;
+//	for (i = 0; i < 32; i++) {
+//		if (s == (1 << i)) {
+//			return i;
+//		}
+//	}
+//
+//	return -1;
+//}
+
+int send_extmem_addr_to_pru(void *addr, size_t sz)
+{
+	void **pru_priv_mem = get_pru_mem();
+
+	/* We are sending data to the PRU in two 32 bit slots at its address
+	 * 0x0 (the beginning of its address space) The first slot (0x0) is the address
+	 * of the buffer space, the second is the size of the buffer space (0x4).  The
+	 * size of the buffer space is expressed as a power of 2.
+	 */
+	pru_priv_mem[0] = addr;
+	((uint32_t *)pru_priv_mem)[1] = sz;
+
+	return 0;
+}
+
+void usage(const char *progname)
+{
+	fprintf(stderr, "Usage: %s OUTPUT_FILE\n", progname);
+}
+
+int run(const char *out_file)
+{
+	bool overrun = false;
+
+	if(geteuid()) {
+		ERROR("must be run as root in order to access PRU");
+		return -1;
+	}
+
+	/* initialize PRU */
+	if(prussdrv_init() != 0) {
+		ERROR("prussdrv_init() failed");
+		return -1;
+	}
+
+	tpruss_intc_initdata intc = PRUSS_INTC_INITDATA;
+
+	/* open the interrupt */
+	if(prussdrv_open(PRU_EVTOUT_0) != 0) {
+		ERROR("prussdrv_open() failed");
+		return -1;
+	}
+
+	if (prussdrv_pru_reset(0) != 0) {
+		ERROR("prussdrv_pru_reset() failed");
+		return -1;
+	}
+
+	/* initialize interrupt */
+	if(prussdrv_pruintc_init(&intc) != 0) {
+		ERROR("prussdrv_pruintc_init() failed");
+		return -1;
+	}
+
+	void *extmem_addr;
+	size_t extmem_size;
+	if (get_extmem_address_from_module(&extmem_addr, &extmem_size) == -1) {
+		ERROR("failed to obtain extmem address");
+		return -1;
+	}
+
+	if (send_extmem_addr_to_pru(extmem_addr, extmem_size) == -1) {
+		return -1;
+	}
+
+	void *ddrmem = get_designated_ddr(extmem_addr);
+	if (ddrmem == NULL) {
+		ERROR("failed to get designated ddr memory");
+		return -1;
+	}
+
+	/* Open outfile */
+	int dumpfd = open(out_file, O_WRONLY | O_CREAT | O_TRUNC, 0700);
+	//int dumpfd = open("/dev/null", O_WRONLY, 0700);
+	if (dumpfd == -1) {
+		perror("open");
+		return -1;
+	}
+
+	/* initialize the library, PRU and interrupt; launch our PRU program */
+	if(pru_setup("./iorec.bin")) {
+		pru_cleanup();
+		return -1;
+	}
+
+	uint64_t t1,t2;
+
+	t1 = clock_get_rel_time();
+
+	/* Address of the write counter which will be updated by the PRU
+	 * Its value is in bytes.
+	 */
+	volatile uint32_t *write_counter_raw = (volatile uint32_t *)(((uint8_t *)ddrmem) + extmem_size - 4);
+	*write_counter_raw = 0;
+
+	/* Do the acquisition */
+	uint32_t read_counter = 0;
+	uint32_t last_write_counter = 0;
+	uint32_t data_size = extmem_size - 4;
+	uint32_t polls = 0;
+	for (;;) {
+		polls++;
+
+		uint32_t write_counter;
+		write_counter = *write_counter_raw;
+
+		//printf("Write counter: %" PRIu32 "  Prev write counter: %" PRIu32 "\n", write_counter, last_write_counter);
+
+		/* Offsets, in bytes */
+		off_t read_begin1 = last_write_counter % data_size;
+		off_t read_end1 = write_counter % data_size;
+		off_t read_begin2;
+		off_t read_end2;
+		if (read_begin1 > read_end1) {
+			//printf("Got a reversal\n");
+			read_begin2 = 0;
+			read_end2 = read_end1;
+			read_end1 = data_size;
+		} else {
+			read_begin2 = read_end1;
+			read_end2 = read_end1;
+		}
+
+		//printf("read_begin1: %jd  read_end1: %jd  read_begin2: %jd  read_end2: %jd\n", (intmax_t) read_begin1, (intmax_t) read_end1, (intmax_t) read_begin2, (intmax_t) read_end2);
+
+		/* Go ahead and check if something is fishy */
+		//uint32_t i;
+		//for (i = read_begin1; i < read_end1; i+=4) {
+		//	bool waiting = false;
+		//	for (;;) {
+		//		volatile uint32_t *seenp = (volatile uint32_t *)(((uint8_t *)ddrmem) + i);
+		//		uint32_t seen = *seenp;
+		//		uint32_t expected = (last_write_counter / data_size * data_size) + i;
+
+		//		if (seen != expected) {
+		//			if (!waiting) {
+		//				waiting = true;
+		//				printf("fault; offset %" PRIu32 " got %" PRIu32 " but expected %" PRIu32 ", i is %lu out of %lu\n", i, seen, expected, i-read_begin1, read_end1-read_begin1);
+		//			}
+		//		} else {
+		//			if (waiting == true) {
+		//				printf("fixed! got %" PRIu32 "\n", seen);
+		//			} else {
+		//				//printf("Great. Got %" PRIu32 "\n", seen);
+		//			}
+		//			break;
+		//		}
+		//	}
+		//}
+
+		if (read_end1 - read_begin1) {
+			if (write(dumpfd, ((uint8_t *)ddrmem) + read_begin1, read_end1 - read_begin1) == -1) {
+				perror("write");
+				return -1;
+			}
+		}
+		if (read_end2 - read_begin2) {
+			if (write(dumpfd, ((uint8_t *)ddrmem) + read_begin2, read_end2 - read_begin2) == -1) {
+				perror("write");
+				return -1;
+			}
+		}
+
+		last_write_counter = write_counter;
+		asm volatile("" ::: "memory");
+		write_counter = *write_counter_raw;
+
+		if (write_counter - last_write_counter > extmem_size) {
+			ERROR("buffer overrun, diff is %" PRIu32, write_counter - last_write_counter);
+			overrun = true;
+			break;
+		}
+		
+		//printf("diff: %" PRIu32 " write_counter: %" PRIu32 " read_counter: %" PRIu32 "\n", write_counter - read_counter, write_counter, read_counter);
+		read_counter = last_write_counter;
+
+		if (write_counter > 100000000) {
+			break;
+		}
+	}
+
+	t2 = clock_get_rel_time();
+
+	printf("Summary: %" PRIu32 " bytes read in %f sec\n", read_counter, ((double)(t2-t1))/1000000000);
+	printf("         That's %f bytes/second\n", ((double)read_counter)/(((double)(t2-t1))/1000000000));
+	printf("         That's %" PRIu32 " bytes/poll\n", read_counter/polls);
+
+	/* clear the event, disable the PRU and let the library clean up */
+	if (pru_cleanup() < 0) {
+		ERROR("failure to cleanup PRU");
+		return -1;
+	}
+
+	if (overrun) {
+		return -1;
+	} else {
+		return 0;
+	}
+}
+
+int main(int argc, char **argv)
+{
+	if (argc < 2) {
+		ERROR("missing output file");
+		usage(argv[0]);
+		exit(1);
+	}
+
+	const char *out_file = argv[1];
+
+	if (run(out_file) == -1) {
+		exit(1);
+	}
+
+	return 0;
+}

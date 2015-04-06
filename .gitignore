@@ -1,0 +1,4 @@
+iorec
+*.bin
+*.dtbo
+*.o

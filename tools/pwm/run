@@ -1,0 +1,13 @@
+#!/bin/bash
+
+# Activate PWM at 115200 Hz
+# On pin P9_16
+
+echo am33xx_pwm > /sys/devices/bone_capemgr.9/slots 
+echo bone_pwm_P9_16 > /sys/devices/bone_capemgr.9/slots 
+while ! cd /sys/devices/ocp.3/pwm_test_P9_16.*/; do
+	sleep .1
+done
+
+echo 4340 > duty
+echo 8681 > period
