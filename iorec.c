@@ -352,7 +352,6 @@ int run(void)
 	/* Do the acquisition */
 	uint32_t read_counter = 0;
 	uint32_t last_write_counter = 0;
-	uint32_t data_size = extmem_size - 4;
 	uint32_t polls = 0;
 	uint32_t max_buffer_use = 0;
 	for (;;) {
@@ -367,14 +366,14 @@ int run(void)
 
 
 		/* Offsets, in bytes */
-		off_t read_begin1 = last_write_counter % data_size;
-		off_t read_end1 = write_counter % data_size;
+		off_t read_begin1 = last_write_counter % extmem_size;
+		off_t read_end1 = write_counter % extmem_size;
 		off_t read_begin2;
 		off_t read_end2;
 		if (read_begin1 > read_end1) {
 			read_begin2 = 0;
 			read_end2 = read_end1;
-			read_end1 = data_size;
+			read_end1 = extmem_size;
 		} else {
 			read_begin2 = read_end1;
 			read_end2 = read_end1;

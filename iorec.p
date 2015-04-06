@@ -104,7 +104,6 @@ START:
     LBCO r1, C28, 8, 4  // r1 = base address for the ddr memory, which we're reading from the private memory
     LBCO r2, C28, 12, 4  // r2 = size of designated region, must be a power of 2,
                         //      passed by C code, read from the private memory
-    SUB r2, r2, 4       // remove 4 bytes for the output of the write counter
                         // r3 = temporary var for computations in the loop
     LBCO r4, C28, 16, 4  // r4 = delay amount, passed by C code
     MOV r5, 0           // r5 = the relative counter; says the offset in the ddr region we're writing to next
