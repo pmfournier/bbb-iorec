@@ -7,8 +7,8 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <getopt.h>
-
-#define ERROR(msg, args...) fprintf(stderr, "error: " msg "\n", ##args)
+#include "bitinput.h"
+#include "log.h"
 
 #define SYNC_FRAME_LENGTH 81
 #define SYNC_FRAME_LENGTH_TOL 5
@@ -266,33 +266,27 @@ main(int argc, char **argv)
 		return false;
 	}
 
-	for (;;) {
-		uint32_t thisval[1024];
-		int result = read(STDIN_FILENO, &thisval, 1024);
+	struct bit_input *bi = bit_input_create(STDIN_FILENO);
+	if (bi == NULL) {
+		ERROR("failed to create bit input");
+		abort();
+	}
 
+	for (;;) {
+		int result;
+		int d;
+
+		result = bit_input_get(bi, &d);
 		if (result == -1) {
-			perror("read");
-			exit(1);
-		}
-		if (result == 0) {
+			ERROR("error getting next bit");
+			abort();
+		} else if (result == 0) {
 			break;
 		}
 
-		if ((result >> 2) << 2 != result) {
-			ERROR("expected not divisible by 4");
-			exit(1);
-		}
+		decode(&s, d, read_offset);
 
-		int i;
-		for (i = 0; i < result/4; i++) {
-			if (thisval[i] & (1 << 15)) {
-				decode(&s, 1, read_offset+i);
-			} else {
-				decode(&s, 0, read_offset+i);
-			}
-		}
-
-		read_offset += result/4;
+		read_offset++;
 	}
 
 	return 0;
