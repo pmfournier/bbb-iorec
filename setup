@@ -1,0 +1,7 @@
+rmmod uio-pruss
+
+echo BB-BONE-PRU-01 >/sys/devices/bone_capemgr.9/slots
+
+modprobe uio-pruss extram_pool_sz=8388608
+
+echo BB-IOREC-Pins >/sys/devices/bone_capemgr.9/slots
