@@ -378,7 +378,7 @@ int main(int argc, char **argv)
 		exit(1);
 	}
 
-	fd_ann_out = open(flag_annotation_out_file, O_WRONLY | O_CREAT | O_TRUNC);
+	fd_ann_out = open(flag_annotation_out_file, O_WRONLY | O_CREAT | O_TRUNC, 0644);
 	if (fd_ann_out == -1) {
 		perror("open");
 		exit(1);
