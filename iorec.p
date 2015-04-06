@@ -15,7 +15,7 @@ START:
     // Writing zero means C28 will point to the beginning of PRU0's private memory.
     MOV       r0, 0x00000000
     MOV       r1, CTPPR_0
-    ST32      r0, r1
+    SBBO      r0, r1, 0, 4
 
     MOV r0, 0           // r0 = write counter; not moduloed
     LBCO r1, C28, 8, 4  // r1 = base address for the ddr memory, which we're reading from the private memory
