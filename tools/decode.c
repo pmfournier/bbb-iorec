@@ -215,8 +215,8 @@ parse_opt(int argc, char **argv)
 	struct option opts[] = {
 		{ "annotation-out", 1, NULL, 1 },
 		{ "help", 0, NULL, 'h' },
-		{ "frame-length", 0, NULL, 'f' },
-		{ "frame-length-tol", 0, NULL, 't' },
+		{ "frame-length", 1, NULL, 'f' },
+		{ "frame-length-tol", 1, NULL, 't' },
 		{ NULL, 0, NULL, 0 },
 	};
 
