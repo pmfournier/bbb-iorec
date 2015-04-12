@@ -30,7 +30,7 @@ struct state {
 
 	/* frame decode */
 	int frame_length;
-	char frame_samples[200]; /* FIXME HACK HACK this can overflow*/
+	char *frame_samples;
 	size_t n_frame_samples;
 	size_t frame_required_samples;
 	off_t beginning_of_frame;
@@ -258,6 +258,15 @@ main(int argc, char **argv)
 
 	if (!parse_opt(argc, argv)) {
 		ERROR("failed to parse arguments");
+		exit(1);
+	}
+
+	/* FIXME HACK HACK HACK: reserving twice the amount of memory is a terrible
+	 * approximation.
+	 */
+	s.frame_samples = malloc(2 * sync_frame_length * sizeof(s.frame_samples[0]));
+	if (s.frame_samples == 0) {
+		ERROR("out of memory");
 		exit(1);
 	}
 
