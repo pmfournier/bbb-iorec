@@ -360,6 +360,11 @@ int run(void)
 		return -1;
 	}
 
+	if (extmem_size < 8388608) {
+		ERROR("Buffer size is %zu, which is smaller than 8388608 bytes. Performance would suck.", extmem_size);
+		return -1;
+	}
+
 	void *pru0_priv_mem = get_pru_mem();
 
 	if (send_extmem_addr_to_pru(pru0_priv_mem, extmem_addr, extmem_size) == -1) {
